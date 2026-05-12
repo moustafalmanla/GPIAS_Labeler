@@ -3,3 +3,9 @@ AUTO_ADVANCE = True
 WINDOW_TITLE = "GPIAS Startle Labeler"
 SAMPLE_RATE_HZ = 10000
 TRIAL_VIEW_SECONDS = 1.0
+
+# Preprocessing settings for xyz movement -> RMS conversion.
+RMS_SENSITIVITY = 0.3
+LOWPASS_CUTOFF_HZ = 45
+LOWPASS_ORDER = 6
+

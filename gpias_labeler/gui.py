@@ -2,7 +2,7 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 try:
     from .config import (
@@ -23,13 +23,13 @@ except ImportError:
 
 
 class LabelGUI(QWidget):
-    def __init__(self, trials, trial_types, label_manager):
+    def __init__(self, trials, trial_types, label_manager, initial_labels=None):
         super().__init__()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.trials = np.asarray(trials)
         self.trial_types = np.asarray(trial_types)
         self.label_manager = label_manager
-        self.current_labels = {}
+        self.current_labels = initial_labels if initial_labels is not None else {}
         # Track randomized display order separately from original trial indices.
         self.presentation_order = np.random.permutation(len(self.trials))
         self.index = 0
@@ -42,7 +42,7 @@ class LabelGUI(QWidget):
         self.layout.addWidget(self.info)
 
         self.shortcut_hint = QLabel(
-            "Shortcuts: S=startle, N=nonstartle, U=uncertain, Left/Right=navigate, Q=save+quit"
+            "Shortcuts: S=startle, N=nonstartle, U=toggle uncertain, Left/Right=navigate, Q=quit"
         )
         self.layout.addWidget(self.shortcut_hint)
 
@@ -69,10 +69,10 @@ class LabelGUI(QWidget):
         nonstartle_btn.clicked.connect(lambda: self.label("nonstartle"))
         controls.addWidget(nonstartle_btn)
 
-        uncertain_btn = QPushButton("Uncertain (U)")
-        uncertain_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        uncertain_btn.clicked.connect(lambda: self.label("uncertain"))
-        controls.addWidget(uncertain_btn)
+        self.uncertain_cb = QCheckBox("Uncertain (U)")
+        self.uncertain_cb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.uncertain_cb.stateChanged.connect(self._on_uncertain_changed)
+        controls.addWidget(self.uncertain_cb)
 
         prev_btn = QPushButton("Prev (←)")
         prev_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -84,10 +84,15 @@ class LabelGUI(QWidget):
         next_btn.clicked.connect(self.next_trial)
         controls.addWidget(next_btn)
 
-        save_btn = QPushButton("Save + Quit (Q)")
+        save_btn = QPushButton("Save")
         save_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        save_btn.clicked.connect(self.save_and_close)
+        save_btn.clicked.connect(self.label_manager.save)
         controls.addWidget(save_btn)
+
+        quit_btn = QPushButton("Quit (Q)")
+        quit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        quit_btn.clicked.connect(self.save_and_close)
+        controls.addWidget(quit_btn)
 
         self.layout.addLayout(controls)
 
@@ -125,15 +130,22 @@ class LabelGUI(QWidget):
         self.ax.set_xlim(0, TRIAL_VIEW_SECONDS)
         self.ax.set_xlabel("Time (s)")
         self.info.setText(
-            f"Trial {self.index + 1}/{len(self.trials)} (randomized) | Original: {original_index + 1} | Type: {trial_type}"
+            f"Trial {self.index + 1}/{len(self.trials)} (randomized) | Original: {original_index + 1}"
         )
 
+        self.uncertain_cb.blockSignals(True)
         if current_label:
-            self.label_status.setText(f"Labeled: {current_label}")
+            self.uncertain_cb.setChecked(current_label["uncertain"])
+            label_text = current_label["label"]
+            if current_label["uncertain"]:
+                label_text += " (uncertain)"
+            self.label_status.setText(f"Labeled: {label_text}")
             self.label_status.setStyleSheet("color: #1b5e20; font-weight: 600;")
         else:
+            self.uncertain_cb.setChecked(False)
             self.label_status.setText("Not labeled yet")
             self.label_status.setStyleSheet("color: #b71c1c; font-weight: 600;")
+        self.uncertain_cb.blockSignals(False)
 
         self.progress_status.setText(
             f"Progress: {len(self.current_labels)}/{len(self.trials)} labeled"
@@ -149,7 +161,7 @@ class LabelGUI(QWidget):
         elif key == Qt.Key.Key_N:
             self.label("nonstartle")
         elif key == Qt.Key.Key_U:
-            self.label("uncertain")
+            self.uncertain_cb.setChecked(not self.uncertain_cb.isChecked())
         elif key == Qt.Key.Key_Right:
             self.next_trial()
         elif key == Qt.Key.Key_Left:
@@ -162,13 +174,25 @@ class LabelGUI(QWidget):
             return
 
         original_index = int(self.presentation_order[self.index])
-        trial_type = self.trial_types[original_index]
-        self.label_manager.add_label(original_index, label, trial_type)
-        self.current_labels[original_index] = label
+        uncertain = self.uncertain_cb.isChecked()
+        self.label_manager.add_label(original_index, label, uncertain)
+        self.current_labels[original_index] = {"label": label, "uncertain": uncertain}
         self.update_plot()
 
         if AUTO_ADVANCE:
             self.next_trial()
+
+    def _on_uncertain_changed(self, _state):
+        if len(self.trials) == 0:
+            return
+        original_index = int(self.presentation_order[self.index])
+        if original_index not in self.current_labels:
+            return
+        uncertain = self.uncertain_cb.isChecked()
+        entry = self.current_labels[original_index]
+        entry["uncertain"] = uncertain
+        self.label_manager.add_label(original_index, entry["label"], uncertain)
+        self.update_plot()
 
     def save_and_close(self):
         self.label_manager.save()

@@ -1,7 +1,8 @@
 import sys
 import os
 
-from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog
+import pandas as pd
+from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox
 
 try:
     from .data_loader import load_data
@@ -33,12 +34,32 @@ def main():
         return
     expert_id = expert_id.strip() or "unknown"
 
+    stem = os.path.splitext(file_path)[0]
+    output_path = stem + "_labels.csv"
+
     label_manager = LabelManager(
         os.path.basename(file_path),
-        expert_id
+        expert_id,
+        output_path,
     )
 
-    window = LabelGUI(trials, trial_types, label_manager)
+    initial_labels = {}
+    if os.path.exists(output_path):
+        reply = QMessageBox.question(
+            None,
+            "Previous labels found",
+            f"Previous labels found for this file. Resume?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            df = pd.read_csv(output_path)
+            for _, row in df.iterrows():
+                idx = int(row["trial_index"])
+                uncertain = bool(row["uncertain"])
+                initial_labels[idx] = {"label": row["label"], "uncertain": uncertain}
+                label_manager.add_label(idx, row["label"], uncertain)
+
+    window = LabelGUI(trials, trial_types, label_manager, initial_labels)
     window.show()
 
     sys.exit(app.exec())
