@@ -1,6 +1,9 @@
+import math
+
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from matplotlib.ticker import AutoMinorLocator, MaxNLocator
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -22,17 +25,71 @@ except ImportError:
     )
 
 
+class ZoomableFigureCanvas(FigureCanvas):
+    def __init__(self, figure, zoom_callback, pan_callback):
+        super().__init__(figure)
+        self._zoom_callback = zoom_callback
+        self._pan_callback = pan_callback
+        self._drag_active = False
+        self._drag_start_x = 0.0
+        self._drag_start_start_seconds = 0.0
+        self._drag_button = Qt.MouseButton.NoButton
+
+    def wheelEvent(self, event):
+        if self._zoom_callback is None:
+            return super().wheelEvent(event)
+
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self._zoom_callback(0.8)
+        elif delta < 0:
+            self._zoom_callback(1.25)
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pan_callback is not None:
+            self._drag_active = True
+            self._drag_button = event.button()
+            self._drag_start_x = event.position().x()
+            self._drag_start_start_seconds = self._pan_callback("get_start")
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_active and (event.buttons() & Qt.MouseButton.LeftButton):
+            dx_pixels = event.position().x() - self._drag_start_x
+            self._pan_callback("drag", dx_pixels, self._drag_start_start_seconds)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_active and event.button() == self._drag_button:
+            self._drag_active = False
+            self._drag_button = Qt.MouseButton.NoButton
+            self.unsetCursor()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class LabelGUI(QWidget):
     def __init__(self, trials, trial_types, label_manager, initial_labels=None):
         super().__init__()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.trials = np.asarray(trials)
         self.trial_types = np.asarray(trial_types)
+        self.y_max = math.ceil(self.trials.max()) if len(self.trials) > 0 else 1
         self.label_manager = label_manager
         self.current_labels = initial_labels if initial_labels is not None else {}
         # Track randomized display order separately from original trial indices.
         self.presentation_order = np.random.permutation(len(self.trials))
         self.index = 0
+        self.view_start_seconds = 0.0
+        self.view_span_seconds = TRIAL_VIEW_SECONDS
+        self.min_view_span_seconds = max(0.01, 50.0 / SAMPLE_RATE_HZ)
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(900, 500)
@@ -42,7 +99,7 @@ class LabelGUI(QWidget):
         self.layout.addWidget(self.info)
 
         self.shortcut_hint = QLabel(
-            "Shortcuts: S=startle, N=nonstartle, U=toggle uncertain, Left/Right=navigate, Q=quit"
+            "Shortcuts: S=startle, N=nonstartle, U=toggle uncertain, Left/Right=navigate, Q=quit; mouse wheel or zoom buttons to zoom"
         )
         self.layout.addWidget(self.shortcut_hint)
 
@@ -54,10 +111,25 @@ class LabelGUI(QWidget):
 
         self.figure = Figure(figsize=(9, 4), tight_layout=True)
         self.ax = self.figure.add_subplot(111)
-        self.canvas = FigureCanvas(self.figure)
+        self.canvas = ZoomableFigureCanvas(self.figure, self.zoom_view, self.pan_view)
         self.layout.addWidget(self.canvas)
 
         controls = QHBoxLayout()
+
+        zoom_out_btn = QPushButton("Zoom Out")
+        zoom_out_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        zoom_out_btn.clicked.connect(lambda: self.zoom_view(1.25))
+        controls.addWidget(zoom_out_btn)
+
+        zoom_in_btn = QPushButton("Zoom In")
+        zoom_in_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        zoom_in_btn.clicked.connect(lambda: self.zoom_view(0.8))
+        controls.addWidget(zoom_in_btn)
+
+        reset_zoom_btn = QPushButton("Reset Zoom")
+        reset_zoom_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        reset_zoom_btn.clicked.connect(self.reset_zoom)
+        controls.addWidget(reset_zoom_btn)
 
         startle_btn = QPushButton("Startle (S)")
         startle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -112,23 +184,36 @@ class LabelGUI(QWidget):
 
         original_index = int(self.presentation_order[self.index])
         trial = np.asarray(self.trials[original_index]).ravel()
-        trial_type = self.trial_types[original_index]
         current_label = self.current_labels.get(original_index)
-        max_samples = min(len(trial), int(SAMPLE_RATE_HZ * TRIAL_VIEW_SECONDS))
+        total_samples = len(trial)
+        trial_duration_seconds = total_samples / float(SAMPLE_RATE_HZ)
+        view_span_seconds = min(self.view_span_seconds, trial_duration_seconds)
+        max_start_seconds = max(0.0, trial_duration_seconds - view_span_seconds)
+        view_start_seconds = min(max(self.view_start_seconds, 0.0), max_start_seconds)
+        view_end_seconds = view_start_seconds + view_span_seconds
+        start_sample = max(0, int(view_start_seconds * SAMPLE_RATE_HZ))
+        end_sample = min(total_samples, int(math.ceil(view_end_seconds * SAMPLE_RATE_HZ)))
 
-        if max_samples <= 0:
+        if end_sample <= start_sample:
             self.info.setText("Current trial has no samples.")
+            self.label_status.setText("")
+            self.progress_status.setText(f"Progress: {len(self.current_labels)}/{len(self.trials)} labeled")
             self.canvas.draw()
             return
 
-        visible_trial = trial[:max_samples]
-        time_axis = np.arange(max_samples, dtype=float) / float(SAMPLE_RATE_HZ)
+        visible_trial = trial[start_sample:end_sample]
+        time_axis = np.arange(start_sample, end_sample, dtype=float) / float(SAMPLE_RATE_HZ)
         stimulus_time_s = STIMULUS_TIME_MS / 1000.0
 
         self.ax.plot(time_axis, visible_trial)
         self.ax.axvline(stimulus_time_s, linestyle="--")
-        self.ax.set_xlim(0, TRIAL_VIEW_SECONDS)
+        self.ax.set_xlim(view_start_seconds, view_end_seconds)
+        self.ax.set_ylim(0, self.y_max)
         self.ax.set_xlabel("Time (s)")
+        self.ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
+        self.ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+        self.ax.tick_params(axis="x", which="major", length=6)
+        self.ax.tick_params(axis="x", which="minor", length=3)
         self.info.setText(
             f"Trial {self.index + 1}/{len(self.trials)} (randomized) | Original: {original_index + 1}"
         )
@@ -182,6 +267,61 @@ class LabelGUI(QWidget):
         if AUTO_ADVANCE:
             self.next_trial()
 
+    def zoom_view(self, factor):
+        if len(self.trials) == 0:
+            return
+
+        trial = np.asarray(self.trials[int(self.presentation_order[self.index])]).ravel()
+        if len(trial) == 0:
+            return
+
+        trial_duration_seconds = len(trial) / float(SAMPLE_RATE_HZ)
+        current_span = min(self.view_span_seconds, trial_duration_seconds)
+        new_span = max(self.min_view_span_seconds, min(trial_duration_seconds, current_span * factor))
+
+        current_center = self.view_start_seconds + (current_span / 2.0)
+        new_start = current_center - (new_span / 2.0)
+        new_start = max(0.0, min(new_start, max(0.0, trial_duration_seconds - new_span)))
+
+        self.view_span_seconds = new_span
+        self.view_start_seconds = new_start
+        self.update_plot()
+
+    def pan_view(self, action, dx_pixels=None, drag_start_seconds=None):
+        if len(self.trials) == 0:
+            return 0.0
+
+        if action == "get_start":
+            return self.view_start_seconds
+
+        if action != "drag" or dx_pixels is None or drag_start_seconds is None:
+            return self.view_start_seconds
+
+        trial = np.asarray(self.trials[int(self.presentation_order[self.index])]).ravel()
+        if len(trial) == 0:
+            return self.view_start_seconds
+
+        trial_duration_seconds = len(trial) / float(SAMPLE_RATE_HZ)
+        current_span = min(self.view_span_seconds, trial_duration_seconds)
+        if current_span >= trial_duration_seconds:
+            self.view_start_seconds = 0.0
+            self.update_plot()
+            return self.view_start_seconds
+
+        pixels = max(1, self.canvas.width())
+        seconds_per_pixel = current_span / float(pixels)
+        new_start = drag_start_seconds - (dx_pixels * seconds_per_pixel)
+        new_start = max(0.0, min(new_start, max(0.0, trial_duration_seconds - current_span)))
+
+        self.view_start_seconds = new_start
+        self.update_plot()
+        return self.view_start_seconds
+
+    def reset_zoom(self):
+        self.view_start_seconds = 0.0
+        self.view_span_seconds = TRIAL_VIEW_SECONDS
+        self.update_plot()
+
     def _on_uncertain_changed(self, _state):
         if len(self.trials) == 0:
             return
@@ -201,9 +341,11 @@ class LabelGUI(QWidget):
     def next_trial(self):
         if self.index < len(self.trials) - 1:
             self.index += 1
+            self.view_start_seconds = 0.0
             self.update_plot()
 
     def prev_trial(self):
         if self.index > 0:
             self.index -= 1
+            self.view_start_seconds = 0.0
             self.update_plot()

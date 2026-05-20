@@ -1,7 +1,7 @@
 STIMULUS_TIME_MS = 800
 AUTO_ADVANCE = True
 WINDOW_TITLE = "GPIAS Startle Labeler"
-SAMPLE_RATE_HZ = 10000
+SAMPLE_RATE_HZ = 9500
 TRIAL_VIEW_SECONDS = 1.0
 
 # Preprocessing settings for xyz movement -> RMS conversion.
