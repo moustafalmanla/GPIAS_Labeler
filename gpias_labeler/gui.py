@@ -76,9 +76,10 @@ class ZoomableFigureCanvas(FigureCanvas):
 
 
 class LabelGUI(QWidget):
-    def __init__(self, trials, trial_types, label_manager, initial_labels=None):
+    def __init__(self, trials, trial_types, label_manager, initial_labels=None, on_load_file=None):
         super().__init__()
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.on_load_file = on_load_file
         self.trials = np.asarray(trials)
         self.trial_types = np.asarray(trial_types)
         self.y_max = math.ceil(self.trials.max()) if len(self.trials) > 0 else 1
@@ -160,6 +161,11 @@ class LabelGUI(QWidget):
         save_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         save_btn.clicked.connect(self.label_manager.save)
         controls.addWidget(save_btn)
+
+        upload_file_btn = QPushButton("Upload New File")
+        upload_file_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        upload_file_btn.clicked.connect(self.upload_new_file)
+        controls.addWidget(upload_file_btn)
 
         quit_btn = QPushButton("Quit (Q)")
         quit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -337,6 +343,24 @@ class LabelGUI(QWidget):
     def save_and_close(self):
         self.label_manager.save()
         self.close()
+
+    def upload_new_file(self):
+        if self.on_load_file is not None:
+            self.label_manager.save()
+            self.on_load_file()
+
+    def reset_with_new_data(self, trials, trial_types, label_manager, initial_labels=None):
+        """Reset the GUI with new trial data and label manager."""
+        self.trials = np.asarray(trials)
+        self.trial_types = np.asarray(trial_types)
+        self.y_max = math.ceil(self.trials.max()) if len(self.trials) > 0 else 1
+        self.label_manager = label_manager
+        self.current_labels = initial_labels if initial_labels is not None else {}
+        self.presentation_order = np.random.permutation(len(self.trials))
+        self.index = 0
+        self.view_start_seconds = 0.0
+        self.view_span_seconds = TRIAL_VIEW_SECONDS
+        self.update_plot()
 
     def next_trial(self):
         if self.index < len(self.trials) - 1:
