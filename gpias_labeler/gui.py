@@ -88,6 +88,7 @@ class LabelGUI(QWidget):
         # Track randomized display order separately from original trial indices.
         self.presentation_order = np.random.permutation(len(self.trials))
         self.index = 0
+        self._y_scale_factor = 1.0
         self.view_start_seconds = 0.0
         self.view_span_seconds = TRIAL_VIEW_SECONDS
         self.min_view_span_seconds = max(0.01, 50.0 / SAMPLE_RATE_HZ)
@@ -214,7 +215,17 @@ class LabelGUI(QWidget):
         self.ax.plot(time_axis, visible_trial)
         self.ax.axvline(stimulus_time_s, linestyle="--")
         self.ax.set_xlim(view_start_seconds, view_end_seconds)
-        self.ax.set_ylim(0, self.y_max)
+        vmin, vmax = float(visible_trial.min()), float(visible_trial.max())
+        if vmax == vmin:
+            vmin -= 1.0
+            vmax += 1.0
+        pad = (vmax - vmin) * 0.1
+        target_ymin = float(vmin - pad)
+        target_ymax = float(vmax + pad)
+        f = self._y_scale_factor
+        ymin = 0.0 * f + target_ymin * (1.0 - f)
+        ymax = float(self.y_max) * f + target_ymax * (1.0 - f)
+        self.ax.set_ylim(ymin, ymax)
         self.ax.set_xlabel("Time (s)")
         self.ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
         self.ax.xaxis.set_minor_locator(AutoMinorLocator(2))
@@ -289,6 +300,10 @@ class LabelGUI(QWidget):
         new_start = current_center - (new_span / 2.0)
         new_start = max(0.0, min(new_start, max(0.0, trial_duration_seconds - new_span)))
 
+        if factor < 1.0:
+            self._y_scale_factor = max(0.05, self._y_scale_factor * 0.85)
+        elif factor > 1.0:
+            self._y_scale_factor = min(1.0, self._y_scale_factor / 0.85)
         self.view_span_seconds = new_span
         self.view_start_seconds = new_start
         self.update_plot()
@@ -324,6 +339,7 @@ class LabelGUI(QWidget):
         return self.view_start_seconds
 
     def reset_zoom(self):
+        self._y_scale_factor = 1.0
         self.view_start_seconds = 0.0
         self.view_span_seconds = TRIAL_VIEW_SECONDS
         self.update_plot()
@@ -358,6 +374,7 @@ class LabelGUI(QWidget):
         self.current_labels = initial_labels if initial_labels is not None else {}
         self.presentation_order = np.random.permutation(len(self.trials))
         self.index = 0
+        self._y_scale_factor = 1.0
         self.view_start_seconds = 0.0
         self.view_span_seconds = TRIAL_VIEW_SECONDS
         self.update_plot()
@@ -365,11 +382,13 @@ class LabelGUI(QWidget):
     def next_trial(self):
         if self.index < len(self.trials) - 1:
             self.index += 1
+            self._y_scale_factor = 1.0
             self.view_start_seconds = 0.0
             self.update_plot()
 
     def prev_trial(self):
         if self.index > 0:
             self.index -= 1
+            self._y_scale_factor = 1.0
             self.view_start_seconds = 0.0
             self.update_plot()
